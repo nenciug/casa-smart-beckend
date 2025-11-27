@@ -1,65 +1,60 @@
-from fastapi import FastAPI, Depends
+# backend/main.py
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-import random
-from mangum import Mangum
+from pydantic import BaseModel
+from typing import List
 
-from database import SessionLocal, engine, Base
-from models import Product
+# Dacă folosești OpenAI pentru recomandări AI
+import openai
+import os
 
-# Creează tabelele dacă nu există
-Base.metadata.create_all(bind=engine)
+openai.api_key = os.getenv("OPENAI_API_KEY")  # setează cheia în mediu
 
-app = FastAPI(title="Casa Ta Inteligentă API")
+app = FastAPI()
 
-# CORS – permite orice origine
+# Configurare CORS
+origins = [
+    "https://casasmart-ai.vercel.app",  # domeniul frontend-ului tău
+    "http://localhost:3000",            # pentru test local
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,  # sau ["*"] pentru toate originile
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Conexiune DB
-def get_db():
-    db = SessionLocal()
+# Model pentru request
+class RecommendationRequest(BaseModel):
+    query: str
+
+# Model pentru response
+class RecommendationResponse(BaseModel):
+    recommendations: List[str]
+
+@app.post("/recommend", response_model=RecommendationResponse)
+async def recommend(data: RecommendationRequest):
+    query_text = data.query
+
+    # Exemplu simplu: folosește OpenAI GPT
     try:
-        yield db
-    finally:
-        db.close()
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Ești un consultant pentru case inteligente."},
+                {"role": "user", "content": query_text}
+            ],
+            max_tokens=300
+        )
 
-# Adaugă produs
-@app.post("/add_product")
-def add_product(product: dict, db: Session = Depends(get_db)):
-    new_product = Product(
-        name=product.get("name"),
-        category=product.get("category"),
-        price=product.get("price"),
-        description=product.get("description")
-    )
-    db.add(new_product)
-    db.commit()
-    return {"status": "added", "product": product}
+        # Extrage textul recomandării
+        answer = response.choices[0].message['content'].strip()
+        # Poți împărți răspunsul pe linii dacă vrei lista
+        recommendations = [line.strip() for line in answer.split("\n") if line.strip()]
+        return RecommendationResponse(recommendations=recommendations)
 
-# Listare produse
-@app.get("/all_products")
-def all_products(db: Session = Depends(get_db)):
-    products = db.query(Product).all()
-    return products
-
-# Recomandare / căutare după text
-@app.post("/recommend")
-def recommend(query: dict, db: Session = Depends(get_db)):
-    search_text = query.get("query", "").lower()
-    products_list = db.query(Product).all()
-    filtered = [
-        p.name for p in products_list
-        if search_text in (p.name or "").lower() or search_text in (p.description or "").lower()
-    ]
-    if not filtered:
-        return {"recommendations": ["Niciun produs disponibil"]}
-    return {"recommendations": random.sample(filtered, min(2, len(filtered)))}
-
-# Mangum handler pentru Vercel serverless
-handler = Mangum(app)
+    except Exception as e:
+        print("Eroare OpenAI:", e)
+        return RecommendationResponse(recommendations=["Eroare la generarea recomandărilor."])
